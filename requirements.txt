@@ -1,0 +1,6 @@
+# Dependencias de PRODUCCION del backend.
+# Vercel lee este archivo para instalar lo necesario en la funcion serverless
+# (y el Dockerfile de la Fase 5 tambien), asi que aqui solo va lo imprescindible.
+fastapi>=0.142,<1.0
+# SDK de OpenAI: tambien sirve para Groq (API compatible) cambiando OPENAI_BASE_URL
+openai>=3.24,<4.0

@@ -1,0 +1,10 @@
+# Dependencias de DESARROLLO (solo en el contenedor local, no en Vercel).
+# La primera linea incluye tambien todas las de produccion.
+-r requirements.txt
+
+# Servidor ASGI para ejecutar FastAPI en local (Vercel usa su propio servidor)
+uvicorn[standard]>=0.54,<1.0
+
+# Tests del backend (httpx2 lo usa el TestClient de FastAPI para simular peticiones)
+pytest>=9.1,<10.0
+httpx2>=2.13,<3.0
