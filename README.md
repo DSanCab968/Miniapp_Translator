@@ -5,7 +5,7 @@ AI application* (UD1). The goal of the practice is not the app itself but how it
 deployed, secured, tested and operated** on **Vercel** (serverless) and on **AWS EC2** (one Docker
 container).
 
-> Status: phase 1 (minimal backend, tag `v0.1-backend`). Sections marked *To be completed* are filled in as each
+> Status: phase 2 (frontend connected locally, tag `v0.2-frontend`). Sections marked *To be completed* are filled in as each
 > milestone is closed.
 
 ## Table of contents
@@ -55,13 +55,22 @@ Before writing this README the documentation was planned following the ideas of 
 
 ## 3. Architecture
 
-*Current state (phase 1): backend only. The frontend, Clerk, Vercel and Docker parts are added in later phases.*
+*Current state (phase 2): SPA + backend running locally. Clerk, Vercel and the single container are added in later phases.*
 
 ```mermaid
 flowchart LR
-    client["Client (curl / Swagger UI)"] -->|"POST /api/translate"| api["FastAPI backend"]
+    browser["Browser: Vue SPA (one screen)"] -->|"/api/translate (same origin)"| vite["Vite dev server :5173 (proxy)"]
+    vite --> api["FastAPI backend :8000"]
     api -->|"prompt + JSON mode"| groq["Groq API (openai/gpt-oss-120b)"]
 ```
+
+- **Frontend**: Vue 3 + TypeScript (strict) + Tailwind CSS. One form: text (max 2000 characters, with counter),
+  target language and a *Translate* button. It shows a loading state, a clear error message or the result
+  (translation + detected language). The UI is in English, like the language names returned by the AI.
+- **Same origin**: the SPA always calls relative paths (`/api/...`). Locally the Vite proxy forwards them to
+  FastAPI; on Vercel the rewrites will do it, and on EC2 FastAPI will serve both the SPA and the API.
+  That is why CORS is not needed.
+- **Double validation**: the UI disables the button for empty or too long texts, and the backend validates again.
 
 | Endpoint | Access | Description |
 |---|---|---|
@@ -90,7 +99,7 @@ container.
 git clone git@github.com:DSanCab968/Miniapp_Translator.git
 cd Miniapp_Translator
 cp .env.example .env          # then edit .env and set your real Groq key
-docker compose up --build     # API on http://localhost:8000 (docs: /api/docs)
+docker compose up --build     # app on http://localhost:5173, API docs on http://localhost:8000/api/docs
 docker compose run --rm api pytest   # run the backend tests
 docker compose down           # stop and remove the containers
 ```
@@ -100,7 +109,9 @@ Local development files (not part of the delivered container):
 | File | Purpose |
 |---|---|
 | `docker/api.Dockerfile` | Development image: Python 3.12 + dependencies, code mounted as a volume, auto reload |
-| `docker-compose.yml` | Starts the `api` service, reads `.env` at run time, port bound to `127.0.0.1` only |
+| `docker-compose.yml` | Starts `api` (FastAPI) and `web` (official `node:24-alpine` image running Vite). Reads `.env` at run time, ports bound to `127.0.0.1` only |
+| `vite.config.ts` | Dev server on port 5173 and proxy `/api` -> `http://api:8000` |
+| `package.json` | Frontend dependencies and scripts (`dev`, `build`, `typecheck`) |
 | `requirements.txt` | Production dependencies (FastAPI, OpenAI SDK) |
 | `requirements-dev.txt` | Production + development dependencies (uvicorn, pytest, httpx2) |
 
@@ -155,7 +166,23 @@ always replaced by a fake client, so the tests cost no tokens.
 | `target_language: "ru"` | `422` (unsupported language) |
 | Without a real key in `.env` | `503 "The translation service is not configured."` |
 
-Example:
+### Phase 2 - frontend (2026-10-12)
+
+| Check | Result |
+|---|---|
+| `vue-tsc --noEmit` (strict TypeScript) | No errors |
+| `npm run build` | OK (JS 68.6 kB, 27.1 kB gzip) |
+| `GET http://localhost:5173/api/health` (through the Vite proxy) | `200 {"status":"ok"}` |
+| French text -> `it` through the proxy | `200`, correct translation, `detected_language: "French"` |
+| API container stopped (`docker compose stop api`) | Proxy returns `502`; the UI shows "The translation service failed. Please try again in a few seconds." |
+| Manual test in the browser | OK, see the screenshots below |
+
+| Screenshot | What it shows |
+|---|---|
+| [`evidence/phase2-empty-form.png`](evidence/phase2-empty-form.png) | The single screen: text box with counter, target language and the *Translate* button disabled while the text is empty |
+| [`evidence/phase2-translation.png`](evidence/phase2-translation.png) | A German text translated into Spanish, with the detected language |
+
+Example (phase 1, calling the API directly):
 
 ```bash
 curl -X POST http://localhost:8000/api/translate \
@@ -178,7 +205,7 @@ curl -X POST http://localhost:8000/api/translate \
 |---|---|---|
 | Repository preparation | - | Done |
 | Minimal backend | `v0.1-backend` | Done |
-| Frontend connected locally | `v0.2-frontend` | Pending |
+| Frontend connected locally | `v0.2-frontend` | Done |
 | First Vercel deployment | `v0.3-vercel` | Pending |
 | Clerk integrated and redeployed | `v0.4-auth` | Pending |
 | Single container tested | `v0.5-docker` | Pending |

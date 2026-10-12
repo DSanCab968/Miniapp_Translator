@@ -1,0 +1,11 @@
+# Archivos que NO se envian a Docker al construir imagenes.
+# Hace el build mas rapido (node_modules pesa mucho) y evita meter secretos en la imagen.
+# (Se revisara en la Fase 5, con el Dockerfile de produccion.)
+.git
+.env
+node_modules
+dist
+__pycache__
+.pytest_cache
+.vercel
+.vercel-cli

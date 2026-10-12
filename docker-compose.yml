@@ -2,11 +2,10 @@
 # Entorno de DESARROLLO LOCAL (no es lo que se entrega: la entrega
 # usa un unico contenedor, Dockerfile de la raiz, Fase 5).
 #
-#   Fase 1: api (FastAPI :8000)
-#   Fase 2: se anadira "web" (Vite :5173) con proxy /api -> api
+#   navegador -> web (Vite :5173) --proxy /api--> api (FastAPI :8000) -> Groq
 #
 # Uso:
-#   docker compose up --build             -> arrancar la API
+#   docker compose up --build             -> arrancar todo (app en http://localhost:5173)
 #   docker compose run --rm api pytest    -> ejecutar los tests
 #   docker compose down                   -> parar y borrar los contenedores
 # ---------------------------------------------------------------
@@ -30,3 +29,21 @@ services:
       # 127.0.0.1 = accesible solo desde tu PC, no desde otros equipos de la red.
       # Documentacion interactiva: http://localhost:8000/api/docs
       - "127.0.0.1:8000:8000"
+
+  # --- Frontend (Vite + Vue) ------------------------------------
+  web:
+    # Imagen oficial de Node: no hace falta Dockerfile propio
+    image: node:24-alpine
+    working_dir: /app
+    user: "1000:1000"
+    # Instala dependencias (si faltan) y arranca el servidor de desarrollo
+    command: sh -c "npm install && npm run dev"
+    environment:
+      # Le dice al proxy de Vite donde esta el backend (nombre del servicio)
+      API_TARGET: http://api:8000
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - api
