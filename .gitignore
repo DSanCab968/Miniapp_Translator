@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------
+# Archivos que git debe IGNORAR (no se suben nunca al repositorio)
+# ---------------------------------------------------------------
+
+# --- Secretos ---------------------------------------------------
+# El .env real tiene las claves de API: NUNCA se sube.
+# En cambio, .env.example SI se sube: es solo una plantilla con valores ficticios.
+.env
+.env.*
+!.env.example
+# Certificados y claves privadas (p. ej. la clave .pem de EC2 en la Fase 6)
+*.pem
+*.key
+# Ajustes locales de Claude Code (permisos personales de esta maquina)
+.claude/settings.local.json
+
+# --- Node / Frontend --------------------------------------------
+# Dependencias de npm: se regeneran con "npm install"
+node_modules/
+# Resultado del build de Vite: se regenera con "npm run build"
+dist/
+# Cache de Vite
+.vite/
+
+# --- Python / Backend -------------------------------------------
+# Entornos virtuales (por si alguna vez se crea uno fuera de Docker)
+.venv/
+venv/
+# Bytecode compilado de Python
+__pycache__/
+*.pyc
+# Cache de Pytest
+.pytest_cache/
+
+# --- Vercel -----------------------------------------------------
+# Carpeta que crea "vercel link" con los IDs del proyecto
+.vercel/
+# Sesion de la Vercel CLI (token de login) cuando se usa desde un contenedor.
+# Es un secreto: no se sube nunca.
+.vercel-cli/
+
+# --- Sistema / editores -----------------------------------------
+*.log
+.DS_Store
+
+# --- Documentacion interna (solo local, no se publica) ----------
+# Instrucciones para Claude Code y notas de aprendizaje.
+# La documentacion entregada es README.md.
+CLAUDE.md
+PROJECT_EXPLANATION.md
