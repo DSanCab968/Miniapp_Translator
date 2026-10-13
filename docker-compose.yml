@@ -8,6 +8,7 @@
 #   docker compose up --build             -> arrancar todo (app en http://localhost:5173)
 #   docker compose run --rm api pytest    -> ejecutar los tests
 #   docker compose down                   -> parar y borrar los contenedores
+#   docker compose run --rm vercel <cmd>  -> Vercel CLI (p. ej. "whoami", "ls", "deploy")
 # ---------------------------------------------------------------
 
 services:
@@ -47,3 +48,27 @@ services:
       - "127.0.0.1:5173:5173"
     depends_on:
       - api
+
+  # --- Vercel CLI (herramienta, no es parte de la app) -----------
+  # "profiles" hace que NO arranque con "docker compose up": solo con
+  # "docker compose run --rm vercel <comando>". Asi no se instala nada en el PC.
+  vercel:
+    build:
+      context: .
+      dockerfile: docker/vercel.Dockerfile
+    profiles: ["tools"]
+    working_dir: /app
+    user: "1000:1000"
+    # Version fijada: el mismo comando hace lo mismo hoy y el dia de la defensa
+    entrypoint: ["npx", "--yes", "vercel@63.1.2"]
+    environment:
+      # La CLI guarda la sesion (token) en $XDG_DATA_HOME/com.vercel.cli, es decir,
+      # en .vercel-cli/com.vercel.cli/ del proyecto, carpeta que esta en .gitignore.
+      # (No se usa --global-config porque "vercel curl" se la pasaria tambien a curl.)
+      XDG_DATA_HOME: /app/.vercel-cli
+      # Cache de npm dentro de .vercel-cli/: la CLI no se descarga en cada comando
+      npm_config_cache: /app/.vercel-cli/npm-cache
+      # Desactiva el envio de estadisticas de uso de la CLI
+      VERCEL_TELEMETRY_DISABLED: "1"
+    volumes:
+      - .:/app

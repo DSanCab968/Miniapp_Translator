@@ -5,7 +5,7 @@ AI application* (UD1). The goal of the practice is not the app itself but how it
 deployed, secured, tested and operated** on **Vercel** (serverless) and on **AWS EC2** (one Docker
 container).
 
-> Status: phase 2 (frontend connected locally, tag `v0.2-frontend`). Sections marked *To be completed* are filled in as each
+> Status: phase 3 (deployed on Vercel, tag `v0.3-vercel`). Live URL: https://miniapp-translator.vercel.app Sections marked *To be completed* are filled in as each
 > milestone is closed.
 
 ## Table of contents
@@ -55,13 +55,25 @@ Before writing this README the documentation was planned following the ideas of 
 
 ## 3. Architecture
 
-*Current state (phase 2): SPA + backend running locally. Clerk, Vercel and the single container are added in later phases.*
+*Current state (phase 3): running locally and on Vercel. Clerk and the single container are added in later phases.*
+
+**Local development**
 
 ```mermaid
 flowchart LR
     browser["Browser: Vue SPA (one screen)"] -->|"/api/translate (same origin)"| vite["Vite dev server :5173 (proxy)"]
     vite --> api["FastAPI backend :8000"]
     api -->|"prompt + JSON mode"| groq["Groq API (openai/gpt-oss-120b)"]
+```
+
+**Vercel (one project)**
+
+```mermaid
+flowchart LR
+    browser["Browser"] -->|"https://miniapp-translator.vercel.app"| edge["Vercel CDN"]
+    edge -->|"/ and /assets/*"| static["Static SPA (dist/ built by Vite)"]
+    edge -->|"rewrite /api/* -> /api/index.py"| fn["Vercel Python Function (FastAPI), region fra1"]
+    fn -->|"OPENAI_API_KEY (secret env var)"| groq["Groq API"]
 ```
 
 - **Frontend**: Vue 3 + TypeScript (strict) + Tailwind CSS. One form: text (max 2000 characters, with counter),
@@ -118,17 +130,63 @@ Local development files (not part of the delivered container):
 ## 5. Environment variables
 
 The template with fictitious values is [`.env.example`](.env.example). The real `.env` is ignored by Git.
-Clerk variables are added in phase 4.
+Clerk variables are added in phase 4. On Vercel, variables are only applied to **new** deployments: after
+changing one, deploy again.
 
-| Variable | Type | Used by | When it is read |
-|---|---|---|---|
-| `OPENAI_API_KEY` | **Secret** | Backend | Run time |
-| `OPENAI_BASE_URL` | Configuration (public) | Backend | Run time |
-| `AI_MODEL` | Configuration (public) | Backend | Run time |
+| Variable | Type | Used by | When it is read | Local | Vercel |
+|---|---|---|---|---|---|
+| `OPENAI_API_KEY` | **Secret** | Backend | Run time | `.env` | Production + Preview, type *Secret* (sensitive, cannot be read back) |
+| `OPENAI_BASE_URL` | Configuration (public) | Backend | Run time | `.env` | Production + Preview, type *Config* |
+| `AI_MODEL` | Configuration (public) | Backend | Run time | `.env` | Production + Preview, type *Config* |
 
 ## 6. Vercel
 
-*To be completed in phase 3.*
+| | |
+|---|---|
+| Production URL | https://miniapp-translator.vercel.app |
+| Project | `miniapp-translator` (one project: static SPA + Python Function) |
+| Region of the function | `fra1` (Frankfurt) |
+| Vercel CLI | `63.1.2`, run inside Docker (nothing installed on the host) |
+| Deployed version | tag `v0.3-vercel` |
+
+### Configuration files
+
+| File | Purpose |
+|---|---|
+| `vercel.json` | `framework: vite` (build the SPA; without it Vercel may detect FastAPI and send every route to Python), region `fra1`, rewrite `/api/(.*)` -> `/api/index.py`, `maxDuration` 60 s, `excludeFiles` to keep tests and frontend sources out of the function |
+| `api/index.py` | Entry point of the Python Function. Vercel turns each `.py` file in `api/` into a function, so this file only imports the FastAPI app from `backend/` |
+| `.python-version` | Python 3.12 (same as the development container) |
+| `requirements.txt` | Production dependencies installed by Vercel |
+| `.vercelignore` | **Allowlist** of the files the CLI uploads. The CLI does not read `.gitignore` and would upload `.env`; with `/*` + `!needed-file` only the code and config are uploaded |
+| `docker/vercel.Dockerfile` + `vercel` service in `docker-compose.yml` | `node:24-alpine` + `curl`, running `npx vercel@63.1.2`. The CLI session is stored in `.vercel-cli/` (ignored by Git) through `XDG_DATA_HOME`. The service has the `tools` profile, so `docker compose up` does not start it |
+
+### CLI operations performed
+
+All commands are run as `docker compose run --rm vercel <command>`. Output shortened.
+
+| Step | Command | Result |
+|---|---|---|
+| Log in | `login` | Device flow: open the URL, approve in the browser. Session saved in `.vercel-cli/` |
+| Check session | `whoami` | Prints the Vercel user |
+| List projects | `project ls` | Existing projects of the team |
+| Create project | `project add miniapp-translator` | `Success! Project miniapp-translator added` |
+| Link folder | `link --yes --project miniapp-translator` | `Linked ies-zaidin-vergeles1/miniapp-translator` (creates `.vercel/`, ignored by Git) |
+| Config variables | `env add OPENAI_BASE_URL production --value https://api.groq.com/openai/v1 --no-sensitive --yes` (same for `preview` and for `AI_MODEL`) | `Added ... Type Config` |
+| Secret variable | `env add OPENAI_API_KEY production --sensitive` (and `preview`) | Value typed at the prompt, never in the command line, so it is not stored in the shell history |
+| List variables | `env ls` | 6 variables; `OPENAI_API_KEY` shown as `Hidden` / `Secret` |
+| Preview deployment | `deploy` | `Preview https://miniapp-translator-g3t7ijbuo-...vercel.app`, `Ready in 34s` |
+| Test protected preview | `curl /api/translate --deployment <preview-url> -- -X POST ...` | `200` with the translation (the CLI generates a protection bypass token) |
+| Production deployment | `deploy --prod` | `Aliased https://miniapp-translator.vercel.app`, `Ready in 34s` |
+| List deployments | `ls` | 3 deployments: 2 Production, 1 Preview, all `Ready` |
+| Inspect | `inspect https://miniapp-translator.vercel.app` | Deployment id, `target production`, `status Ready`, build 29 s |
+| Runtime logs | `logs --since 10m --environment production` | One line per request (`POST /api/translate`, `GET /api/health`) and the call to Groq; errors with their traceback. No user text is logged |
+
+### Preview vs Production
+
+- **Production** is the public URL `https://miniapp-translator.vercel.app`, updated only with `deploy --prod`.
+- **Preview** deployments (`deploy`) get their own URL and are protected by **Vercel Authentication**
+  (Deployment Protection): anonymous visitors get `302` to the Vercel login. They are tested with `vercel curl`.
+- Each environment has its own copy of the variables, so a preview could use a different key or model.
 
 ## 7. Clerk
 
@@ -182,6 +240,24 @@ always replaced by a fake client, so the tests cost no tokens.
 | [`evidence/phase2-empty-form.png`](evidence/phase2-empty-form.png) | The single screen: text box with counter, target language and the *Translate* button disabled while the text is empty |
 | [`evidence/phase2-translation.png`](evidence/phase2-translation.png) | A German text translated into Spanish, with the detected language |
 
+### Phase 3 - Vercel (2026-10-13)
+
+| Check | Result |
+|---|---|
+| `GET https://miniapp-translator.vercel.app/` | `200` (SPA) |
+| `GET /api/health` | `200 {"status":"ok"}` |
+| Italian text -> `en` | `200`, correct translation, `detected_language: "Italian"` (0.7 s) |
+| Text with only spaces | `422` |
+| Spanish text -> `de` on the protected preview (`vercel curl`) | `200`, correct translation |
+| Deployment URL opened without a Vercel session | `302` (Deployment Protection) |
+| Manual test in the browser | OK, see the screenshots below |
+
+| Screenshot | What it shows |
+|---|---|
+| [`evidence/phase3-production.png`](evidence/phase3-production.png) | The production URL in the browser with a real translation (Spanish detected, translated into English) |
+| [`evidence/phase3-deployment.png`](evidence/phase3-deployment.png) | Vercel dashboard: the 3 deployments of the project (2 Production, 1 Preview), all `Ready` |
+| [`evidence/phase3-env-vars.png`](evidence/phase3-env-vars.png) | Environment variables in Production and Preview; `OPENAI_API_KEY` is sensitive (lock icon, no value can be shown) |
+
 Example (phase 1, calling the API directly):
 
 ```bash
@@ -197,6 +273,11 @@ curl -X POST http://localhost:8000/api/translate \
 
 | Phase | Problem | Cause | Solution |
 |---|---|---|---|
+| 3 | `vercel login` printed `fetch failed` although the browser said the login was correct, and no session was saved | Intermittent network problem in the school network: one request of the CLI timed out after 5 s while the next ones answered in 0.2 s | Run `login` again (with `--debug` to see the failing request). The second attempt worked |
+| 3 | `vercel link` created `.env.local` with a `VERCEL_OIDC_TOKEN` and appended `.vercel` and `.env*` to `.gitignore` | Default behaviour of the CLI. The appended `.env*` overrode the `!.env.example` exception | Restored `.gitignore` with `git checkout` and deleted `.env.local` (the app does not use Vercel OIDC) |
+| 3 | The first `vercel deploy` went to **Production**, not Preview | Vercel assigns the first deployment of a project to production | Expected behaviour; the next deployments were previews until `--prod` |
+| 3 | `/api/translate` returned `502` in production while `/api/health` worked | `vercel logs` showed `401 Invalid API Key` from Groq: the secret pasted in Vercel was wrong | Checked the key without showing it (`read -rs KEY; curl ... /models` -> `200`), saved it again with `env add ... --sensitive --force`, deployed again (variables only apply to new deployments) |
+| 3 | `vercel curl` failed: first `curl command not found`, then `curl: option --global-config: is unknown` | `node:24-alpine` has no `curl`, and the CLI forwards `--global-config` to `curl` | Small image `docker/vercel.Dockerfile` (`apk add curl`) and the session folder set with `XDG_DATA_HOME` instead of `--global-config` |
 | 1 | The first real test still returned 503 (AI not configured) | The `.env` file had been created with `cp` but the key was not saved in the editor, so it still had the placeholder value of `.env.example` | Save the file and check it again; the backend treats the placeholder key as "not configured" on purpose |
 
 ## 12. Git and evidence
@@ -206,7 +287,7 @@ curl -X POST http://localhost:8000/api/translate \
 | Repository preparation | - | Done |
 | Minimal backend | `v0.1-backend` | Done |
 | Frontend connected locally | `v0.2-frontend` | Done |
-| First Vercel deployment | `v0.3-vercel` | Pending |
+| First Vercel deployment | `v0.3-vercel` | Done |
 | Clerk integrated and redeployed | `v0.4-auth` | Pending |
 | Single container tested | `v0.5-docker` | Pending |
 | Final AWS deployment | `v1.0-aws` | Pending |

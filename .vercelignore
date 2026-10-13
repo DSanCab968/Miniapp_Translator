@@ -1,0 +1,20 @@
+# Archivos que la Vercel CLI NO sube al desplegar.
+# OJO: la CLI no lee .gitignore, y por defecto SI subiria el .env (con la clave).
+# Por eso se usa una "lista blanca": se ignora todo (/*) y se permite (!) solo lo necesario.
+/*
+!api
+!backend
+!src
+!index.html
+!package.json
+!package-lock.json
+!vite.config.ts
+!tsconfig.json
+!tailwind.config.js
+!postcss.config.js
+!vercel.json
+!requirements.txt
+!.python-version
+# Dentro de lo permitido, tampoco hacen falta los tests ni la cache de Python
+backend/tests
+__pycache__

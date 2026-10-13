@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "regions": ["fra1"],
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index.py" }],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{backend/tests/**,src/**,node_modules/**,dist/**,**/__pycache__/**}"
+    }
+  }
+}
