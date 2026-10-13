@@ -5,7 +5,7 @@ AI application* (UD1). The goal of the practice is not the app itself but how it
 deployed, secured, tested and operated** on **Vercel** (serverless) and on **AWS EC2** (one Docker
 container).
 
-> Status: phase 3 (deployed on Vercel, tag `v0.3-vercel`). Live URL: https://miniapp-translator.vercel.app Sections marked *To be completed* are filled in as each
+> Status: phase 4 (Clerk authentication on Vercel, tag `v0.4-auth`). Live URL: https://miniapp-translator.vercel.app Sections marked *To be completed* are filled in as each
 > milestone is closed.
 
 ## Table of contents
@@ -55,7 +55,7 @@ Before writing this README the documentation was planned following the ideas of 
 
 ## 3. Architecture
 
-*Current state (phase 3): running locally and on Vercel. Clerk and the single container are added in later phases.*
+*Current state (phase 4): running locally and on Vercel, protected with Clerk. The single container is added in phase 5.*
 
 **Local development**
 
@@ -76,6 +76,33 @@ flowchart LR
     fn -->|"OPENAI_API_KEY (secret env var)"| groq["Groq API"]
 ```
 
+**Role of Clerk (authentication)**
+
+```mermaid
+sequenceDiagram
+    participant U as User (browser, Vue SPA)
+    participant C as Clerk
+    participant A as FastAPI (/api/translate)
+    participant G as Groq
+    U->>C: Sign in (Clerk modal)
+    C-->>U: Session (short-lived JWT, renewed automatically)
+    U->>A: POST /api/translate + Authorization: Bearer <token>
+    A->>C: Get public keys (JWKS, cached)
+    A->>A: Check signature, expiry and azp (authorized party)
+    alt valid token
+        A->>G: Translation request
+        G-->>A: JSON answer
+        A-->>U: 200 {translation, detected_language}
+    else missing or invalid token
+        A-->>U: 401 You must be signed in
+    end
+```
+
+- Clerk manages users, passwords and sessions: the app has **no user management of its own**.
+- The SPA only shows the form to signed-in users, but **that is not the protection**: the backend rejects with
+  `401` any call without a valid token, also direct calls with `curl`.
+- `/api/health` stays public (no sensitive data).
+
 - **Frontend**: Vue 3 + TypeScript (strict) + Tailwind CSS. One form: text (max 2000 characters, with counter),
   target language and a *Translate* button. It shows a loading state, a clear error message or the result
   (translation + detected language). The UI is in English, like the language names returned by the AI.
@@ -83,11 +110,13 @@ flowchart LR
   FastAPI; on Vercel the rewrites will do it, and on EC2 FastAPI will serve both the SPA and the API.
   That is why CORS is not needed.
 - **Double validation**: the UI disables the button for empty or too long texts, and the backend validates again.
+- **Session**: signed-out users only see a *Sign in* button (Clerk modal). Signed-in users see the translator,
+  their name and a *Sign out* button. There are no profile pages or user areas.
 
 | Endpoint | Access | Description |
 |---|---|---|
 | `GET /api/health` | Public | Returns `{"status": "ok"}`. No sensitive data |
-| `POST /api/translate` | Public for now (Clerk in phase 4) | Body `{text, target_language}` -> `{translation, detected_language}` |
+| `POST /api/translate` | **Signed-in users only** (Clerk token) | Body `{text, target_language}` -> `{translation, detected_language}` |
 | `GET /api/docs` | Public | Interactive API documentation (Swagger UI) |
 
 Rules applied in the backend:
@@ -98,6 +127,8 @@ Rules applied in the backend:
 - **Prompt injection**: the user text is sent between `<text>` tags and the model is told it is data to translate,
   never instructions.
 - **Limits**: output limited with `max_completion_tokens`, client timeout of 30 s and at most 1 retry.
+- **Authentication**: `401` without a valid Clerk token (checked before anything else, so the AI is never called).
+  `503` if Clerk is not configured (fail closed: nobody gets in).
 - **Errors**: 503 if the AI key is missing, 502 if the provider fails, times out or returns an invalid answer.
   The user only gets a generic message; the technical detail goes to the server log, which never contains the
   user text or the translation.
@@ -130,7 +161,7 @@ Local development files (not part of the delivered container):
 ## 5. Environment variables
 
 The template with fictitious values is [`.env.example`](.env.example). The real `.env` is ignored by Git.
-Clerk variables are added in phase 4. On Vercel, variables are only applied to **new** deployments: after
+On Vercel, variables are only applied to **new** deployments: after
 changing one, deploy again.
 
 | Variable | Type | Used by | When it is read | Local | Vercel |
@@ -138,6 +169,12 @@ changing one, deploy again.
 | `OPENAI_API_KEY` | **Secret** | Backend | Run time | `.env` | Production + Preview, type *Secret* (sensitive, cannot be read back) |
 | `OPENAI_BASE_URL` | Configuration (public) | Backend | Run time | `.env` | Production + Preview, type *Config* |
 | `AI_MODEL` | Configuration (public) | Backend | Run time | `.env` | Production + Preview, type *Config* |
+| `CLERK_SECRET_KEY` | **Secret** | Backend | Run time | `.env` | Production + Preview, type *Secret* |
+| `CLERK_AUTHORIZED_PARTIES` | Configuration (public) | Backend | Run time | `.env` (`http://localhost:5173`) | `https://miniapp-translator.vercel.app` (Production and Preview) |
+| `VITE_CLERK_PUBLISHABLE_KEY` | **Public** (it is inside the JavaScript bundle) | Frontend | **Build time**: Vite inlines it when compiling, so changing it requires a new build / deployment | `.env` (read by Vite) | Production + Preview, type *Config* |
+
+Only variables starting with `VITE_` reach the browser. A scan of the deployed JavaScript bundle found the
+publishable key (`pk_test_`) and **no** `sk_test_` or `gsk_` value.
 
 ## 6. Vercel
 
@@ -177,6 +214,8 @@ All commands are run as `docker compose run --rm vercel <command>`. Output short
 | Preview deployment | `deploy` | `Preview https://miniapp-translator-g3t7ijbuo-...vercel.app`, `Ready in 34s` |
 | Test protected preview | `curl /api/translate --deployment <preview-url> -- -X POST ...` | `200` with the translation (the CLI generates a protection bypass token) |
 | Production deployment | `deploy --prod` | `Aliased https://miniapp-translator.vercel.app`, `Ready in 34s` |
+| Clerk variables (phase 4) | `env add VITE_CLERK_PUBLISHABLE_KEY production --value <pk> --no-sensitive --yes`, `env add CLERK_AUTHORIZED_PARTIES production --value https://miniapp-translator.vercel.app ...`, `env add CLERK_SECRET_KEY production --sensitive` (same for `preview`) | `Added`; `env ls` shows `CLERK_SECRET_KEY` as `Hidden` / `Secret` |
+| Redeploy with Clerk (phase 4) | `deploy` (preview), then `deploy --prod` | `Ready in 56s` (the build now also embeds the publishable key) |
 | List deployments | `ls` | 3 deployments: 2 Production, 1 Preview, all `Ready` |
 | Inspect | `inspect https://miniapp-translator.vercel.app` | Deployment id, `target production`, `status Ready`, build 29 s |
 | Runtime logs | `logs --since 10m --environment production` | One line per request (`POST /api/translate`, `GET /api/health`) and the call to Groq; errors with their traceback. No user text is logged |
@@ -190,7 +229,50 @@ All commands are run as `docker compose run --rm vercel <command>`. Output short
 
 ## 7. Clerk
 
-*To be completed in phase 4.*
+| | |
+|---|---|
+| Instance | **Development** instance (keys `pk_test_` / `sk_test_`), test users only |
+| Frontend package | `@clerk/vue` 2.5 (`clerkPlugin`, `<Show when="signed-in">`, `SignInButton`, `SignOutButton`, `useAuth().getToken`, `useUser`) |
+| Backend package | `clerk-backend-api` 7.0 (official Python SDK, `authenticate_request`) |
+| Sign-in methods | Email + password |
+
+### How the token is validated (`backend/auth.py`)
+
+1. The SPA gets a session token with `getToken()` before each call and sends it as `Authorization: Bearer <token>`.
+2. The `require_user` dependency is attached to the whole translate router, so it runs **before** the route
+   and before the body is validated.
+3. It refuses requests without a `Bearer` header, then calls `authenticate_request` with:
+   - `secret_key`: used to download the instance public keys (JWKS), cached by the SDK;
+   - `authorized_parties`: from `CLERK_AUTHORIZED_PARTIES`; the `azp` claim of the token (the origin of the page
+     that requested it) must be in this list;
+   - `accepts_token=["session_token"]`: only user session tokens.
+4. The SDK checks the **RS256 signature**, the **expiry** (`exp`, `nbf`) and the **azp**. Any failure -> `401`
+   with `WWW-Authenticate: Bearer` and a generic message; the reason goes to the log (never the token).
+5. If `CLERK_SECRET_KEY` or `CLERK_AUTHORIZED_PARTIES` is missing -> `503` (fail closed).
+
+### Evidence
+
+| Check | Result |
+|---|---|
+| Signed out | Only the *Sign in* button is shown, no form ([`evidence/phase4-signed-out.png`](evidence/phase4-signed-out.png)) |
+| Signed in, local | Name shown, translation OK; API log: `POST /api/translate 200` ([`evidence/phase4-signed-in.png`](evidence/phase4-signed-in.png)) |
+| Signed in, production | Translation OK at `https://miniapp-translator.vercel.app`; `vercel logs` shows the request without rejection ([`evidence/phase4-production.png`](evidence/phase4-production.png)) |
+| Sign out | The form disappears and the *Sign in* button comes back |
+| **Direct call without token (production)** | `HTTP/2 401`, `www-authenticate: Bearer`, `{"detail":"You must be signed in."}` ([`evidence/phase4-no-token-401.png`](evidence/phase4-no-token-401.png)) |
+| Fake token `Bearer abc.def.ghi` (production) | `401` |
+| Automated test | `test_request_without_valid_token_returns_401`: no header, fake bearer token and `Basic` credentials -> `401`, AI not called |
+
+```bash
+curl -i -X POST https://miniapp-translator.vercel.app/api/translate \
+  -H 'Content-Type: application/json' -d '{"text":"Hola","target_language":"en"}'
+# HTTP/2 401
+# www-authenticate: Bearer
+# {"detail":"You must be signed in."}
+```
+
+**Limitation:** each preview deployment has a different URL, and `CLERK_AUTHORIZED_PARTIES` in Preview contains
+the production URL, so signing in on a preview gives `401`. Previews are already private (Vercel Authentication);
+to test Clerk on one, add its URL to the variable and redeploy.
 
 ## 8. Docker
 
@@ -204,7 +286,7 @@ All commands are run as `docker compose run --rm vercel <command>`. Output short
 
 ### Phase 1 - backend (2026-10-12)
 
-**Automated tests** (`docker compose run --rm api pytest`): 3 tests, 10 cases, **all passing**. The AI is
+**Automated tests** (`docker compose run --rm api pytest`): 4 tests, 13 cases (since phase 4), **all passing**. The AI is
 always replaced by a fake client, so the tests cost no tokens.
 
 | Test | What it checks |
@@ -212,6 +294,7 @@ always replaced by a fake client, so the tests cost no tokens.
 | `test_translate_ok` | Valid request -> 200 with the expected JSON; the text reaches the AI between `<text>` tags with the target language |
 | `test_invalid_input_returns_422` | Empty text, only spaces, more than 2000 characters, unsupported language, missing language -> 422 and the AI is not called |
 | `test_provider_error_returns_502` | Non JSON answer, JSON without the required fields, JSON that is not an object, connection error -> 502 with a generic message |
+| `test_request_without_valid_token_returns_401` (phase 4) | No `Authorization` header, fake bearer token, `Basic` credentials -> 401 with `WWW-Authenticate: Bearer`; the AI is not called |
 
 **Manual check against the real Groq API** (`docker compose up`, then `curl`):
 
@@ -278,6 +361,8 @@ curl -X POST http://localhost:8000/api/translate \
 | 3 | The first `vercel deploy` went to **Production**, not Preview | Vercel assigns the first deployment of a project to production | Expected behaviour; the next deployments were previews until `--prod` |
 | 3 | `/api/translate` returned `502` in production while `/api/health` worked | `vercel logs` showed `401 Invalid API Key` from Groq: the secret pasted in Vercel was wrong | Checked the key without showing it (`read -rs KEY; curl ... /models` -> `200`), saved it again with `env add ... --sensitive --force`, deployed again (variables only apply to new deployments) |
 | 3 | `vercel curl` failed: first `curl command not found`, then `curl: option --global-config: is unknown` | `node:24-alpine` has no `curl`, and the CLI forwards `--global-config` to `curl` | Small image `docker/vercel.Dockerfile` (`apk add curl`) and the session folder set with `XDG_DATA_HOME` instead of `--global-config` |
+| 4 | The test user `pepelopez@example.com` could not sign in | Clerk sends a verification code by email and that address does not exist | Clerk test emails: an address containing `+clerk_test` (e.g. `name+clerk_test@example.com`) accepts the fixed code `424242` in development instances. No real email address is needed |
+| 4 | Right after `deploy --prod`, one call without token returned `200` | During the alias switch (a few seconds) the request was served by the **previous** production deployment (phase 3, no Clerk) | Repeated 5 times: always `401`. Old deployments keep their own URLs, but they are protected by Vercel Authentication (`401 Protected deployment`), so they cannot be used to skip the login |
 | 1 | The first real test still returned 503 (AI not configured) | The `.env` file had been created with `cp` but the key was not saved in the editor, so it still had the placeholder value of `.env.example` | Save the file and check it again; the backend treats the placeholder key as "not configured" on purpose |
 
 ## 12. Git and evidence
@@ -288,6 +373,6 @@ curl -X POST http://localhost:8000/api/translate \
 | Minimal backend | `v0.1-backend` | Done |
 | Frontend connected locally | `v0.2-frontend` | Done |
 | First Vercel deployment | `v0.3-vercel` | Done |
-| Clerk integrated and redeployed | `v0.4-auth` | Pending |
+| Clerk integrated and redeployed | `v0.4-auth` | Done |
 | Single container tested | `v0.5-docker` | Pending |
 | Final AWS deployment | `v1.0-aws` | Pending |

@@ -4,3 +4,5 @@
 fastapi>=0.142,<1.0
 # SDK de OpenAI: tambien sirve para Groq (API compatible) cambiando OPENAI_BASE_URL
 openai>=3.24,<4.0
+# SDK oficial de Clerk para Python: valida el token de sesion (firma, caducidad, azp)
+clerk-backend-api>=7.0,<8.0

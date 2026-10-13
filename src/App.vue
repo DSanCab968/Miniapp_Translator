@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // La unica pantalla de la app: formulario de traduccion + resultado.
+// Desde la Fase 4 el formulario solo se ve con sesion de Clerk iniciada.
 import { computed, ref } from 'vue'
+import { Show, SignInButton, SignOutButton, useAuth, useUser } from '@clerk/vue'
 import { api } from './api'
 import { LANGUAGES, MAX_TEXT_LENGTH, type LanguageCode, type TranslateResponse } from './types/translate'
 
@@ -13,6 +15,15 @@ const loading = ref(false)
 const errorMessage = ref('')
 const result = ref<TranslateResponse | null>(null)
 
+// useAuth da acceso a la sesion de Clerk. getToken es un ref que contiene una funcion,
+// por eso se llama con getToken.value()
+const { getToken } = useAuth()
+
+// Usuario con sesion iniciada (solo para mostrar su nombre). user es null sin sesion.
+const { user } = useUser()
+// Nombre a mostrar: el nombre completo y, si no tiene, su email
+const displayName = computed(() => user.value?.fullName || user.value?.primaryEmailAddress?.emailAddress || '')
+
 // Validacion en la UI (el backend lo vuelve a validar: doble validacion)
 const trimmedLength = computed(() => text.value.trim().length)
 const tooLong = computed(() => text.value.length > MAX_TEXT_LENGTH)
@@ -24,7 +35,9 @@ async function translate(): Promise<void> {
   errorMessage.value = ''
   result.value = null
   try {
-    result.value = await api.translate({ text: text.value, target_language: targetLanguage.value })
+    // Token de sesion (JWT de vida corta). Clerk lo renueva solo; se pide en cada llamada
+    const token = await getToken.value()
+    result.value = await api.translate({ text: text.value, target_language: targetLanguage.value }, token)
   } catch (error) {
     // api.ts siempre lanza Error con un mensaje ya pensado para el usuario
     errorMessage.value = error instanceof Error ? error.message : 'Unexpected error.'
@@ -38,8 +51,34 @@ async function translate(): Promise<void> {
 <template>
   <div class="min-h-screen bg-slate-950 text-slate-100">
     <main class="mx-auto max-w-2xl px-4 py-10">
-      <h1 class="text-2xl font-extrabold tracking-tight">Miniapp <span class="text-indigo-400">Translator</span></h1>
-      <p class="mt-1 text-sm text-slate-400">Write in any language: the AI detects it and translates it.</p>
+      <header class="flex items-start justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-extrabold tracking-tight">Miniapp <span class="text-indigo-400">Translator</span></h1>
+          <p class="mt-1 text-sm text-slate-400">Write in any language: the AI detects it and translates it.</p>
+        </div>
+        <!-- Nombre + cerrar sesion: nada de perfiles ni areas de usuario (lo pide la practica) -->
+        <Show when="signed-in">
+          <div class="flex items-center gap-3">
+            <span class="text-sm text-slate-400">Signed in as <span class="font-medium text-slate-200">{{ displayName }}</span></span>
+            <SignOutButton>
+              <button class="rounded-xl border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">Sign out</button>
+            </SignOutButton>
+          </div>
+        </Show>
+      </header>
+
+      <!-- Sin sesion: solo el boton de iniciar sesion (Clerk abre su ventana de login) -->
+      <Show when="signed-out">
+        <div class="mt-10 rounded-xl border border-slate-800 bg-slate-900 p-6 text-center">
+          <p class="text-slate-300">Sign in to use the translator.</p>
+          <SignInButton mode="modal">
+            <button class="mt-4 rounded-xl bg-indigo-600 px-5 py-2 font-semibold text-white hover:bg-indigo-500">Sign in</button>
+          </SignInButton>
+        </div>
+      </Show>
+
+      <!-- Con sesion: el traductor. Ocultarlo NO es la proteccion: la API exige el token igualmente -->
+      <Show when="signed-in">
 
       <!-- @submit.prevent: evita que el navegador recargue la pagina al enviar -->
       <form class="mt-6 space-y-4" @submit.prevent="translate">
@@ -94,6 +133,7 @@ async function translate(): Promise<void> {
         <!-- whitespace-pre-wrap: respeta los saltos de linea de la traduccion -->
         <p class="mt-2 whitespace-pre-wrap text-slate-100">{{ result.translation }}</p>
       </section>
+      </Show>
     </main>
   </div>
 </template>

@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.ai import get_ai_client
+from backend.auth import require_user
 from backend.main import app
 
 client = TestClient(app)
@@ -37,6 +38,8 @@ def use_ai():
     def set_response(content: str) -> MagicMock:
         ai = fake_ai_client(content)
         app.dependency_overrides[get_ai_client] = lambda: ai
+        # Usuario "ya autenticado": estos tests prueban la traduccion, no Clerk
+        app.dependency_overrides[require_user] = lambda: {"sub": "user_test"}
         return ai
 
     yield set_response
@@ -92,3 +95,26 @@ def test_provider_error_returns_502(use_ai, ai_response):
     assert response.status_code == 502
     # Mensaje generico: nunca se filtran detalles tecnicos al usuario
     assert response.json()["detail"] == "The translation service failed. Please try again later."
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},  # sin cabecera Authorization
+        {"Authorization": "Bearer not-a-valid-token"},  # token falso
+        {"Authorization": "Basic dXNlcjpwYXNz"},  # otro tipo de credencial
+    ],
+)
+def test_request_without_valid_token_returns_401(use_ai, monkeypatch, headers):
+    ai = use_ai("{}")
+    # Aqui SI se usa la autenticacion real: se quita el usuario falso
+    del app.dependency_overrides[require_user]
+    # Configuracion de Clerk ficticia (valores de test, no los reales)
+    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_fake_for_tests")
+    monkeypatch.setenv("CLERK_AUTHORIZED_PARTIES", "http://localhost:5173")
+
+    response = client.post("/api/translate", json={"text": "Hola", "target_language": "en"}, headers=headers)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    ai.chat.completions.create.assert_not_called()  # sin sesion no se gastan tokens

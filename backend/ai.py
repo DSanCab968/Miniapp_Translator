@@ -2,6 +2,7 @@
 Traduccion con IA (Groq, a traves del SDK de OpenAI).
 
     POST /api/translate   {text, target_language} -> {translation, detected_language}
+                          Protegido: solo usuarios con sesion de Clerk (ver backend/auth.py)
 
 Patron:
     1. Pydantic valida la peticion (aunque la UI ya lo limite: doble validacion).
@@ -10,6 +11,7 @@ Patron:
     4. Se limpia y se valida esa respuesta con Pydantic antes de devolverla.
 
 Errores:
+    401 sin token de Clerk o token invalido (backend/auth.py)
     422 entrada invalida (lo genera FastAPI solo, gracias a Pydantic)
     503 la IA no esta configurada (falta OPENAI_API_KEY)
     502 el proveedor falla, tarda demasiado o devuelve algo que no cumple el formato
@@ -26,9 +28,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from openai import APIError, OpenAI
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
+from backend.auth import require_user
+
 logger = logging.getLogger("translator.ai")
 
-router = APIRouter(prefix="/api", tags=["AI"])
+# dependencies=[...]: TODAS las rutas de este router exigen sesion de Clerk.
+# FastAPI ejecuta require_user antes que la ruta (y antes de validar el cuerpo):
+# sin sesion valida -> 401 y la IA nunca se llama.
+router = APIRouter(prefix="/api", tags=["AI"], dependencies=[Depends(require_user)])
 
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 PLACEHOLDER_KEY = "gsk_tu-clave-aqui"  # valor ficticio de .env.example
