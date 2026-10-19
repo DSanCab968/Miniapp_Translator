@@ -5,8 +5,9 @@ AI application* (UD1). The goal of the practice is not the app itself but how it
 deployed, secured, tested and operated** on **Vercel** (serverless) and on **AWS EC2** (one Docker
 container).
 
-> Status: phase 4 (Clerk authentication on Vercel, tag `v0.4-auth`). Live URL: https://miniapp-translator.vercel.app Sections marked *To be completed* are filled in as each
-> milestone is closed.
+> Status: phase 5 (single Docker container, tag `v0.5-docker`). Live URL: https://miniapp-translator.vercel.app
+>
+> Sections marked *To be completed* are filled in as each milestone is closed.
 
 ## Table of contents
 
@@ -55,7 +56,7 @@ Before writing this README the documentation was planned following the ideas of 
 
 ## 3. Architecture
 
-*Current state (phase 4): running locally and on Vercel, protected with Clerk. The single container is added in phase 5.*
+*Current state (phase 5): running locally, on Vercel and as a single Docker container, protected with Clerk. AWS EC2 is added in phase 6.*
 
 **Local development**
 
@@ -75,6 +76,29 @@ flowchart LR
     edge -->|"rewrite /api/* -> /api/index.py"| fn["Vercel Python Function (FastAPI), region fra1"]
     fn -->|"OPENAI_API_KEY (secret env var)"| groq["Groq API"]
 ```
+
+**Single Docker container (the image that will run on EC2)**
+
+```mermaid
+flowchart LR
+    browser["Browser"] -->|"http://host:8080 (same origin)"| port["docker run -p 8080:8000"]
+    subgraph container["Container miniapp-translator (python:3.12-slim, user app)"]
+        uvicorn["uvicorn 0.0.0.0:8000"] --> fastapi["FastAPI"]
+        fastapi -->|"/api/*"| routes["API routes (Clerk check)"]
+        fastapi -->|"everything else"| dist["dist/ (SPA built in stage 1)"]
+    end
+    port --> uvicorn
+    routes --> groq["Groq API"]
+    envfile[".env file (secrets)"] -.->|"--env-file at run time"| container
+```
+
+| | Vercel | Docker container (EC2 in phase 6) |
+|---|---|---|
+| SPA | Static files on the Vercel CDN | Served by FastAPI (`StaticFiles`) from `dist/` |
+| API | Python Function, scales automatically, no server to manage | One long-running `uvicorn` process |
+| Secrets | Vercel Environment Variables | `--env-file` when the container starts |
+| Origin for Clerk (`azp`) | `https://miniapp-translator.vercel.app` | `http://localhost:8080` locally, the EC2 address later |
+| Operation | `vercel ls/inspect/logs` | `docker ps/logs/stop/start`, health check, restart policy |
 
 **Role of Clerk (authentication)**
 
@@ -141,7 +165,7 @@ container.
 ```bash
 git clone git@github.com:DSanCab968/Miniapp_Translator.git
 cd Miniapp_Translator
-cp .env.example .env          # then edit .env and set your real Groq key
+cp .env.example .env          # then edit .env: Groq key and Clerk keys (see section 7)
 docker compose up --build     # app on http://localhost:5173, API docs on http://localhost:8000/api/docs
 docker compose run --rm api pytest   # run the backend tests
 docker compose down           # stop and remove the containers
@@ -155,7 +179,7 @@ Local development files (not part of the delivered container):
 | `docker-compose.yml` | Starts `api` (FastAPI) and `web` (official `node:24-alpine` image running Vite). Reads `.env` at run time, ports bound to `127.0.0.1` only |
 | `vite.config.ts` | Dev server on port 5173 and proxy `/api` -> `http://api:8000` |
 | `package.json` | Frontend dependencies and scripts (`dev`, `build`, `typecheck`) |
-| `requirements.txt` | Production dependencies (FastAPI, OpenAI SDK) |
+| `requirements.txt` | Production dependencies (FastAPI, OpenAI SDK, Clerk SDK, uvicorn) |
 | `requirements-dev.txt` | Production + development dependencies (uvicorn, pytest, httpx2) |
 
 ## 5. Environment variables
@@ -276,7 +300,71 @@ to test Clerk on one, add its URL to the variable and redeploy.
 
 ## 8. Docker
 
-*To be completed in phase 5.*
+The delivered artifact is **one image** that contains the API and the compiled SPA. (`docker-compose.yml` is only
+the development environment with hot reload; it is not used in production.)
+
+### `Dockerfile` (multi-stage)
+
+| Stage | Base image | What it does |
+|---|---|---|
+| 1. `frontend` | `node:24-alpine` | `npm ci` from `package-lock.json`, copies `src/` and the Vite/TS/Tailwind config, receives `VITE_CLERK_PUBLISHABLE_KEY` as a **build argument** and runs `npm run build` (`vue-tsc` + `vite build`) |
+| 2. final | `python:3.12-slim` | Installs `requirements.txt`, copies `backend/` and **only** `dist/` from stage 1 (Node and `node_modules` are not in the final image). Sets `FRONTEND_DIST=/app/dist`, creates and switches to the non-root user `app`, `EXPOSE 8000`, `HEALTHCHECK` on `/api/health`, starts `uvicorn backend.main:app --host 0.0.0.0 --port 8000` |
+
+Other details:
+
+- `backend/main.py` mounts the SPA with `StaticFiles` **only if `FRONTEND_DIST` is set**, and after the `/api` routes,
+  so API routes have priority (`/api/unknown` -> `404` JSON, not the SPA). On Vercel and in the dev environment
+  the variable does not exist and nothing changes.
+- `0.0.0.0`: the server must listen on every interface of the container; with `127.0.0.1` the published port
+  would not reach it.
+- Layer order: dependency files are copied before the code, so changing the code does not reinstall packages.
+- `.dockerignore` is an **allowlist** (`*` + `!needed-file`): `.env`, `.git`, `evidence/`, local notes, the Vercel
+  session and the tests never enter the build context.
+
+### Build-time vs run-time variables
+
+| Variable | When | How it reaches the container |
+|---|---|---|
+| `VITE_CLERK_PUBLISHABLE_KEY` | Build time (inlined in the JS bundle, public) | `docker build --build-arg` |
+| `OPENAI_API_KEY`, `CLERK_SECRET_KEY` (secrets) | Run time | `docker run --env-file .env` (never in the image) |
+| `OPENAI_BASE_URL`, `AI_MODEL` | Run time | `--env-file` |
+| `CLERK_AUTHORIZED_PARTIES` | Run time | `-e CLERK_AUTHORIZED_PARTIES=http://localhost:8080` (overrides the `.env` value, which is the Vite origin) |
+
+### Commands executed
+
+```bash
+# Build (the public key is read from .env; it is not a secret)
+docker build --build-arg VITE_CLERK_PUBLISHABLE_KEY="$(grep '^VITE_CLERK_PUBLISHABLE_KEY=' .env | cut -d= -f2-)" \
+  -t miniapp-translator:0.5 .
+
+# Run: secrets injected at start, port only on localhost, restart policy for the server
+docker run -d --name miniapp-translator --env-file .env \
+  -e CLERK_AUTHORIZED_PARTIES=http://localhost:8080 \
+  -p 127.0.0.1:8080:8000 --restart unless-stopped miniapp-translator:0.5
+
+# Operate
+docker ps                              # STATUS "Up ... (healthy)"
+docker logs miniapp-translator         # request log, Groq calls, rejected requests (never tokens or user text)
+docker stop miniapp-translator         # the app stops answering
+docker start miniapp-translator        # back to "healthy" in a few seconds
+docker image ls miniapp-translator     # size of the image
+```
+
+### Results
+
+| Check | Result |
+|---|---|
+| Build | OK in about 10 s with cache; final image **188 MB** |
+| Secrets inside the image | `grep` for `sk_test_` in `/app`: 0 files. `gsk_`: only the fictitious placeholder in `backend/ai.py`. No `.env*` file in the image. `docker history --no-trunc`: no keys. Image environment: only `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, `FRONTEND_DIST` |
+| User | `uid=10001(app)`; `docker top` shows uvicorn running as 10001, not root |
+| `docker ps` | `Up ... (healthy)`, `127.0.0.1:8080->8000/tcp` ([`evidence/phase5-docker-ps.png`](evidence/phase5-docker-ps.png)) |
+| `GET /` and `/assets/*.js` | `200`, SPA served by FastAPI |
+| `GET /api/health` | `200 {"status":"ok"}` |
+| `POST /api/translate` without token | `401`, `www-authenticate: Bearer` |
+| `GET /api/nope` | `404 {"detail":"Not Found"}` (API routes are not swallowed by the SPA) |
+| Browser at `http://localhost:8080`: sign in, translate, sign out | OK; `docker logs` shows `POST /api/translate 200` and the Groq call ([`evidence/phase5-container.png`](evidence/phase5-container.png)) |
+| `docker stop` / `docker start` | Stopped: no answer. Started: `healthy` again and `200` |
+| Restart policy | `unless-stopped`: Docker restarts the container after a crash or a reboot of the server, unless it was stopped by hand |
 
 ## 9. AWS
 
@@ -341,6 +429,11 @@ always replaced by a fake client, so the tests cost no tokens.
 | [`evidence/phase3-deployment.png`](evidence/phase3-deployment.png) | Vercel dashboard: the 3 deployments of the project (2 Production, 1 Preview), all `Ready` |
 | [`evidence/phase3-env-vars.png`](evidence/phase3-env-vars.png) | Environment variables in Production and Preview; `OPENAI_API_KEY` is sensitive (lock icon, no value can be shown) |
 
+### Phase 5 - single container (2026-10-19)
+
+See [section 8](#8-docker): build, secrets check, health check, 401 without token, browser test and
+`stop`/`start`. Backend tests still pass (13/13) after the change in `backend/main.py`.
+
 Example (phase 1, calling the API directly):
 
 ```bash
@@ -374,5 +467,5 @@ curl -X POST http://localhost:8000/api/translate \
 | Frontend connected locally | `v0.2-frontend` | Done |
 | First Vercel deployment | `v0.3-vercel` | Done |
 | Clerk integrated and redeployed | `v0.4-auth` | Done |
-| Single container tested | `v0.5-docker` | Pending |
+| Single container tested | `v0.5-docker` | Done |
 | Final AWS deployment | `v1.0-aws` | Pending |

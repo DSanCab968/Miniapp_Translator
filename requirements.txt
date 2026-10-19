@@ -6,3 +6,6 @@ fastapi>=0.142,<1.0
 openai>=3.24,<4.0
 # SDK oficial de Clerk para Python: valida el token de sesion (firma, caducidad, azp)
 clerk-backend-api>=7.0,<8.0
+# Servidor ASGI que arranca FastAPI en el contenedor (Dockerfile).
+# Vercel lo instala tambien pero no lo usa (tiene su propio servidor); es pequeno.
+uvicorn>=0.54,<1.0

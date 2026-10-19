@@ -1,11 +1,24 @@
-# Archivos que NO se envian a Docker al construir imagenes.
-# Hace el build mas rapido (node_modules pesa mucho) y evita meter secretos en la imagen.
-# (Se revisara en la Fase 5, con el Dockerfile de produccion.)
-.git
-.env
-node_modules
-dist
-__pycache__
-.pytest_cache
-.vercel
-.vercel-cli
+# Archivos que se envian a Docker al construir imagenes ("contexto de build").
+# Se usa una LISTA BLANCA (como en .vercelignore): se ignora todo (*) y se
+# permite (!) solo lo necesario. Asi .env, .git, las capturas, la sesion de
+# Vercel o cualquier archivo nuevo NUNCA acaban dentro de una imagen por error.
+*
+
+# Backend (Dockerfile) y dependencias (Dockerfile y docker/api.Dockerfile)
+!backend
+!requirements.txt
+!requirements-dev.txt
+
+# Frontend (etapa 1 del Dockerfile)
+!src
+!index.html
+!package.json
+!package-lock.json
+!vite.config.ts
+!tsconfig.json
+!tailwind.config.js
+!postcss.config.js
+
+# Dentro de lo permitido, tampoco hacen falta los tests ni la cache de Python
+backend/tests
+**/__pycache__
