@@ -368,7 +368,153 @@ docker image ls miniapp-translator     # size of the image
 
 ## 9. AWS
 
-*To be completed in phase 6.*
+*Phase 6, in progress.* The same image of section 8 runs as **one container on one EC2 instance**, reachable at
+`http://<PUBLIC_IP>`. Only EC2 is used (plus its Security Group and key pair): no ECR, load balancer, domain or other
+AWS service, as the assignment requires.
+
+### Account and region
+
+| Item | Value | Why |
+|---|---|---|
+| Account | **AWS Academy Learner Lab** (course account) | The assignment is designed for it and the cost comes from the lab credits. A personal account was kept only as a plan B |
+| Region | `us-east-1` (N. Virginia) | Default region of the Learner Lab. Instance, Security Group and key pair must be in the same region |
+| Lab session | About 4 hours | When the session ends the instance is **stopped** (not deleted) and on the next start it gets a **new public IP** (see "Availability" below) |
+
+### Instance
+
+| Setting | Value | Why |
+|---|---|---|
+| Name | `miniapp-translator` | |
+| AMI (OS) | **Ubuntu Server 26.04 LTS**, 64-bit (x86) | Latest LTS (support until 2031), standard Linux with `apt` (the same tools as Debian). Amazon Linux was discarded on the teacher's advice. x86_64 is the same architecture as the image built on the PC |
+| Instance type | **t3.small** (2 vCPU, 2 GB RAM) | `t3.micro` (1 GB) is too tight for Docker plus the VS Code Remote-SSH server |
+| Key pair | `vockey` (the Learner Lab key pair, private key `labsuser.pem`) | |
+| Public IP | Auto-assigned public IPv4 | Needed to reach the app from outside |
+| Storage | 10 GiB gp3 | The OS, Docker and the image (188 MB) fit with room to spare |
+| File systems | None | EFS/FSx would be extra AWS services; the app stores nothing |
+
+### Security Group `miniapp-sg` (inbound rules)
+
+| Type | Port | Source | Why |
+|---|---|---|---|
+| SSH | 22/TCP | **My IP** (the admin's public IP, `/32`) | Administration only from one machine. If the admin connects from another network, the rule must be edited to the new IP |
+| HTTP | 80/TCP | `0.0.0.0/0` | The web app must be reachable by anyone for the demo and evaluation |
+
+Nothing else is open: not `8000` (uvicorn is only reached through Docker's port mapping), not `2375` (Docker API),
+not `443` (there is no certificate, see below). Outbound traffic stays open (default), which the server needs to call
+Groq and Clerk and to install packages.
+
+### HTTP instead of HTTPS (known limitation)
+
+The EC2 URL is plain **HTTP**. A certificate is issued for a **domain**, and the instance only has a public IP that
+changes on every lab start. The options for HTTPS (buying a domain, a load balancer with ACM, or a self-signed
+certificate that the browser rejects) are out of scope or forbidden by the assignment.
+
+Risks (the browser warns that the sign-in "may not be secure", and it is right):
+
+- Between the browser and EC2 everything travels **unencrypted**: the page, its JavaScript, the Clerk session token
+  sent to the API and the text to translate. Someone on the same network could read them.
+- The credentials themselves are sent by Clerk's script to Clerk's servers over **HTTPS**, but the sign-in form and
+  that script are delivered over HTTP. An attacker in the middle could **modify the page** before it reaches the
+  browser (for example, to copy what the user types), so the HTTPS of that request does not make the sign-in safe.
+
+Mitigations in this project: the Clerk session token expires in about 60 seconds, the Clerk instance is a
+**development** instance used only with **test users** (email `+clerk_test` with a fixed verification code, no real
+password), and no real data is processed. Real credentials must not be used on the EC2 URL. In a real deployment: a domain, HTTPS mandatory and port 443 instead of 80. (On Vercel the app is already served over HTTPS:
+Vercel provides the certificate for `*.vercel.app`.)
+
+### SSH access (terminal and VS Code Remote-SSH)
+
+The private key is stored outside the repository, readable only by its owner (SSH refuses keys that other users can
+read):
+
+```bash
+mv ~/<download-folder>/labsuser.pem ~/.ssh/labsuser.pem
+chmod 400 ~/.ssh/labsuser.pem
+```
+
+One alias in `~/.ssh/config` (permissions `600`) serves both the terminal (`ssh miniapp-ec2`) and VS Code
+Remote-SSH (*Remote-SSH: Connect to Host...* -> `miniapp-ec2`), which reads the same file:
+
+```
+Host miniapp-ec2
+    HostName <PUBLIC_IP>          # changes on every lab start: update it here
+    User ubuntu                   # default user of the Ubuntu AMIs
+    IdentityFile ~/.ssh/labsuser.pem
+    IdentitiesOnly yes            # offer only this key
+```
+
+First connection (the server key fingerprint is saved in `~/.ssh/known_hosts`):
+
+```bash
+ssh miniapp-ec2 'whoami; . /etc/os-release; echo $PRETTY_NAME; uname -m; free -h; df -h /'
+# ubuntu / Ubuntu 26.04 LTS / x86_64 / Mem: 1.9Gi total / root disk 8.6G, 24% used
+```
+
+### Docker on the instance
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io          # Ubuntu package: Docker 29.1.3
+sudo systemctl enable --now docker         # start now and on every boot
+sudo usermod -aG docker ubuntu             # use docker without sudo (new session needed)
+systemctl is-enabled docker                # enabled
+docker run --rm hello-world                # "Hello from Docker!" (test image removed afterwards)
+```
+
+Being in the `docker` group is equivalent to root on the instance, which is acceptable here because `ubuntu` is
+already the administrator (it has `sudo`).
+
+### Moving the image to EC2 (no registry)
+
+The image is built on the PC and copied over SSH, so EC2 runs **exactly** the image tested locally, without a
+registry, without access to the (private) repository and without compiling Vue on the instance:
+
+```bash
+docker save miniapp-translator:0.5 | gzip > miniapp-translator-0.5.tar.gz   # 188 MB image -> 60 MB file (8 s)
+scp miniapp-translator-0.5.tar.gz miniapp-ec2:/tmp/                         # about 20 s
+ssh miniapp-ec2 'gunzip -c /tmp/miniapp-translator-0.5.tar.gz | docker load && rm /tmp/miniapp-translator-0.5.tar.gz'
+# Loaded image: miniapp-translator:0.5
+```
+
+### Secrets on the instance
+
+The run-time variables live in `~/miniapp/app.env` on EC2: folder `700`, file `600` (only the `ubuntu` user can
+read them). The file is written by hand with `nano` on the server, so the values never appear in a command, the shell
+history, the image or Git. It has the same variables as `.env.example` except `VITE_CLERK_PUBLISHABLE_KEY` (already
+inside the image), and `CLERK_AUTHORIZED_PARTIES=http://<PUBLIC_IP>`.
+
+### Running the container
+
+```bash
+docker run -d --name miniapp-translator --env-file ~/miniapp/app.env \
+  -p 80:8000 --restart unless-stopped miniapp-translator:0.5
+```
+
+- `-p 80:8000`: port 80 of the instance (the one open in the Security Group) goes to port 8000 of the container,
+  where uvicorn listens. The URL needs no port. Port 8000 of the instance is not published and is blocked by the SG.
+- `--restart unless-stopped`: Docker (enabled at boot) restarts the container after a crash or a reboot.
+- No `-e` override is needed: `app.env` already has the EC2 origin in `CLERK_AUTHORIZED_PARTIES`.
+
+### First check: Clerk over HTTP (image 0.5)
+
+The assignment warns that Clerk may behave differently over HTTP, so the already tested image `0.5` was run first,
+before preparing the final version.
+
+| Check (from the PC, over the Internet) | Result |
+|---|---|
+| `docker ps` on EC2 | `Up ... (healthy)`, `0.0.0.0:80->8000/tcp` |
+| `GET http://<PUBLIC_IP>/` | `200`, SPA served by FastAPI |
+| `GET /api/health` | `200 {"status":"ok"}` |
+| `POST /api/translate` without token | `401`, `www-authenticate: Bearer`, `{"detail":"You must be signed in."}` |
+| `http://<PUBLIC_IP>:8000` | No answer (blocked by the Security Group) |
+| Browser: sign in with a test user, translate, sign out | OK. The browser shows "Not Secure" and warns that the sign-in may not be safe (see above). [`evidence/phase6-browser.png`](evidence/phase6-browser.png) |
+| `docker logs` on EC2 | `GET /` and assets `200`, Clerk JWKS download `200`, Groq call `200`, `POST /api/translate 200`; the earlier test without token logged `401` and `Request rejected: missing bearer token`. No tokens and no user text |
+
+Result: Clerk's development instance works over plain HTTP with the EC2 origin in `CLERK_AUTHORIZED_PARTIES`; no
+change to the code or to the authentication was needed. Note: the uvicorn access log records the **client IP**,
+which is personal data; it is hidden in the screenshots.
+
+*Pending: final image 1.0, update procedure, remaining evidence, availability for the defense and retirement of resources.*
 
 ## 10. Operation and verification
 
