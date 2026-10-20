@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 app = FastAPI(
     title="Miniapp Translator API",
     description="Traduce un texto a un idioma destino con IA (Groq)",
-    version="0.5.0",
+    version="1.0.0",
     # La documentacion automatica tambien cuelga de /api para que funcione
     # a traves del proxy de Vite y de los rewrites de Vercel
     docs_url="/api/docs",
