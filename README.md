@@ -5,9 +5,11 @@ AI application* (UD1). The goal of the practice is not the app itself but how it
 deployed, secured, tested and operated** on **Vercel** (serverless) and on **AWS EC2** (one Docker
 container).
 
-> Status: phase 5 (single Docker container, tag `v0.5-docker`). Live URL: https://miniapp-translator.vercel.app
+> Status: **phase 6 completed, final version `v1.0-aws`** (app version 1.0.0), deployed on both environments:
 >
-> Sections marked *To be completed* are filled in as each milestone is closed.
+> - Vercel (HTTPS): https://miniapp-translator.vercel.app
+> - AWS EC2 (HTTP, one container): `http://<PUBLIC_IP>`. The public IP of the Learner Lab instance changes on every
+>   lab start (last one: `http://3.85.121.249`); see [Availability](#availability-each-lab-session-for-example-for-the-defense).
 
 ## Table of contents
 
@@ -56,7 +58,7 @@ Before writing this README the documentation was planned following the ideas of 
 
 ## 3. Architecture
 
-*Current state (phase 5): running locally, on Vercel and as a single Docker container, protected with Clerk. AWS EC2 is added in phase 6.*
+*Current state (phase 6): running locally, on Vercel and as a single Docker container on AWS EC2, protected with Clerk everywhere.*
 
 **Local development**
 
@@ -77,7 +79,7 @@ flowchart LR
     fn -->|"OPENAI_API_KEY (secret env var)"| groq["Groq API"]
 ```
 
-**Single Docker container (the image that will run on EC2)**
+**Single Docker container (local test, phase 5)**
 
 ```mermaid
 flowchart LR
@@ -92,12 +94,32 @@ flowchart LR
     envfile[".env file (secrets)"] -.->|"--env-file at run time"| container
 ```
 
-| | Vercel | Docker container (EC2 in phase 6) |
+**AWS EC2 (the same image, phase 6)**
+
+```mermaid
+flowchart LR
+    browser["Browser"] -->|"http://PUBLIC_IP (port 80)"| sg["Security Group miniapp-sg: 80 from anywhere, 22 only from the admin IP"]
+    admin["Admin PC: terminal / VS Code Remote-SSH"] -->|"SSH 22 + labsuser.pem"| sg
+    subgraph ec2["EC2 t2.small, Ubuntu 26.04, us-east-1"]
+        docker["Docker (enabled at boot)"] --> container["Container miniapp-translator:1.0, -p 80:8000, restart unless-stopped"]
+        envfile["~/miniapp/app.env (600)"] -.->|"--env-file"| container
+    end
+    sg --> container
+    container -->|"HTTPS"| groq["Groq API"]
+    container -->|"HTTPS (JWKS)"| clerk["Clerk"]
+    admin -.->|"image: docker save + scp + docker load"| docker
+```
+
+| | Vercel | Docker container on EC2 |
 |---|---|---|
 | SPA | Static files on the Vercel CDN | Served by FastAPI (`StaticFiles`) from `dist/` |
 | API | Python Function, scales automatically, no server to manage | One long-running `uvicorn` process |
-| Secrets | Vercel Environment Variables | `--env-file` when the container starts |
-| Origin for Clerk (`azp`) | `https://miniapp-translator.vercel.app` | `http://localhost:8080` locally, the EC2 address later |
+| Secrets | Vercel Environment Variables | `~/miniapp/app.env` (permissions `600`) passed with `--env-file` when the container starts |
+| Origin for Clerk (`azp`) | `https://miniapp-translator.vercel.app` | `http://<PUBLIC_IP>` (`http://localhost:8080` in the local test); changes with the IP |
+| Transport | **HTTPS** (certificate provided by Vercel) | **HTTP** only (no domain, no certificate): see the limitation in section 9 |
+| Network access | Managed by Vercel | Security Group: `80` public, `22` only from the admin IP |
+| Deploy / update | `vercel deploy` (`--prod`) from the repository | Build on the PC, `docker save` + `scp` + `docker load`, replace the container |
+| URL | Fixed | Changes on every lab start (no Elastic IP) |
 | Operation | `vercel ls/inspect/logs` | `docker ps/logs/stop/start`, health check, restart policy |
 
 **Role of Clerk (authentication)**
@@ -131,7 +153,7 @@ sequenceDiagram
   target language and a *Translate* button. It shows a loading state, a clear error message or the result
   (translation + detected language). The UI is in English, like the language names returned by the AI.
 - **Same origin**: the SPA always calls relative paths (`/api/...`). Locally the Vite proxy forwards them to
-  FastAPI; on Vercel the rewrites will do it, and on EC2 FastAPI will serve both the SPA and the API.
+  FastAPI; on Vercel the rewrites do it, and on EC2 FastAPI serves both the SPA and the API.
   That is why CORS is not needed.
 - **Double validation**: the UI disables the button for empty or too long texts, and the backend validates again.
 - **Session**: signed-out users only see a *Sign in* button (Clerk modal). Signed-in users see the translator,
@@ -208,7 +230,7 @@ publishable key (`pk_test_`) and **no** `sk_test_` or `gsk_` value.
 | Project | `miniapp-translator` (one project: static SPA + Python Function) |
 | Region of the function | `fra1` (Frankfurt) |
 | Vercel CLI | `63.1.2`, run inside Docker (nothing installed on the host) |
-| Deployed version | tag `v0.3-vercel` |
+| Deployed version | tag `v1.0-aws` (app version `1.0.0`, `/api/openapi.json`). Earlier production deployments: `v0.3-vercel`, then `v0.4-auth` |
 
 ### Configuration files
 
@@ -243,6 +265,7 @@ All commands are run as `docker compose run --rm vercel <command>`. Output short
 | List deployments | `ls` | 3 deployments: 2 Production, 1 Preview, all `Ready` |
 | Inspect | `inspect https://miniapp-translator.vercel.app` | Deployment id, `target production`, `status Ready`, build 29 s |
 | Runtime logs | `logs --since 10m --environment production` | One line per request (`POST /api/translate`, `GET /api/health`) and the call to Groq; errors with their traceback. No user text is logged |
+| Final version (phase 6) | `deploy --prod` | `Aliased https://miniapp-translator.vercel.app`, `Ready in 39s`. Checked: `GET /` `200`, `/api/openapi.json` `"version":"1.0.0"`, `POST /api/translate` without token `401` (3 of 3) |
 
 ### Preview vs Production
 
@@ -368,7 +391,7 @@ docker image ls miniapp-translator     # size of the image
 
 ## 9. AWS
 
-*Phase 6, in progress.* The same image of section 8 runs as **one container on one EC2 instance**, reachable at
+The same image of section 8 runs as **one container on one EC2 instance**, reachable at
 `http://<PUBLIC_IP>`. Only EC2 is used (plus its Security Group and key pair): no ECR, load balancer, domain or other
 AWS service, as the assignment requires.
 
@@ -386,7 +409,7 @@ AWS service, as the assignment requires.
 |---|---|---|
 | Name | `miniapp-translator` | |
 | AMI (OS) | **Ubuntu Server 26.04 LTS**, 64-bit (x86) | Latest LTS (support until 2031), standard Linux with `apt` (the same tools as Debian). Amazon Linux was discarded on the teacher's advice. x86_64 is the same architecture as the image built on the PC |
-| Instance type | **t3.small** (2 vCPU, 2 GB RAM) | `t3.micro` (1 GB) is too tight for Docker plus the VS Code Remote-SSH server |
+| Instance type | **t2.small** (1 vCPU, 2 GB RAM) | A 1 GB type (`t2.micro`/`t3.micro`) is too tight for Docker plus the VS Code Remote-SSH server. The plan said `t3.small` (newer generation, 2 vCPU), but `t2.small` was selected by mistake in the console; it was kept because the 2 GB of RAM were the requirement and the app works with it (see section 11) |
 | Key pair | `vockey` (the Learner Lab key pair, private key `labsuser.pem`) | |
 | Public IP | Auto-assigned public IPv4 | Needed to reach the app from outside |
 | Storage | 10 GiB gp3 | The OS, Docker and the image (188 MB) fit with room to spare |
@@ -514,7 +537,98 @@ Result: Clerk's development instance works over plain HTTP with the EC2 origin i
 change to the code or to the authentication was needed. Note: the uvicorn access log records the **client IP**,
 which is personal data; it is hidden in the screenshots.
 
-*Pending: final image 1.0, update procedure, remaining evidence, availability for the defense and retirement of resources.*
+### Restart test (lab stopped overnight)
+
+When the lab session ended, the instance was stopped. On the next day (`Start Lab`, new public IP) nobody touched
+the container, and it was running again by itself:
+
+```bash
+uptime; docker ps
+# up 3 min ... miniapp-translator:0.5 ... CREATED 22 hours ago   STATUS Up 3 minutes (healthy)
+```
+
+Docker is enabled at boot and the container has `--restart unless-stopped`, so a reboot of the server does not need
+any manual action ([`evidence/phase6-restart.png`](evidence/phase6-restart.png)). What does need action after a
+new public IP is the configuration that contains it (see "Availability" below).
+
+### Deployed version and update procedure
+
+The deployed version is **1.0**. The image is built on the PC **from a clean commit** and carries two standard OCI
+labels, so the running image can be traced back to the code:
+
+```bash
+git status --short                       # empty: the image matches a commit exactly
+docker build --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_test_... \
+  --label org.opencontainers.image.version=1.0 \
+  --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+  -t miniapp-translator:1.0 .
+```
+
+Update procedure, executed for real to replace `0.5` with `1.0` on EC2:
+
+```bash
+# 1. PC: export the new image and copy it (about 60 MB)
+docker save miniapp-translator:1.0 | gzip > miniapp-translator-1.0.tar.gz
+scp miniapp-translator-1.0.tar.gz miniapp-ec2:/tmp/
+
+# 2. EC2: load it and replace the container (the old image stays, for a rollback)
+gunzip -c /tmp/miniapp-translator-1.0.tar.gz | docker load && rm /tmp/miniapp-translator-1.0.tar.gz
+docker stop miniapp-translator && docker rm miniapp-translator
+docker run -d --name miniapp-translator --env-file ~/miniapp/app.env \
+  -p 80:8000 --restart unless-stopped miniapp-translator:1.0
+
+# 3. Verify
+docker ps                                                     # miniapp-translator:1.0 ... (healthy)
+docker image inspect miniapp-translator:1.0 --format '{{json .Config.Labels}}'
+# {"org.opencontainers.image.revision":"<commit hash>","org.opencontainers.image.version":"1.0"}
+curl -s http://<PUBLIC_IP>/api/openapi.json | grep -o '"version":"[^"]*"'   # "version":"1.0.0"
+```
+
+- Downtime: a few seconds between `docker stop` and the new container being `healthy`.
+- `docker run` reads `app.env` again, so this is also how a change in `app.env` is applied (a `docker restart`
+  keeps the old values).
+- **Rollback**: the previous image is still on the instance; repeat `stop` + `rm` + `run` with
+  `miniapp-translator:0.5`.
+
+| Check after the update | Result |
+|---|---|
+| `docker ps` | `miniapp-translator:1.0`, `Up ... (healthy)`, `0.0.0.0:80->8000/tcp` |
+| Image labels on EC2 | `version=1.0`, `revision=` the commit hash of "Preparar version 1.0 para el despliegue en EC2" |
+| `GET /` | `200` |
+| `/api/openapi.json` | `"version":"1.0.0"` |
+| `POST /api/translate` without token | `401`, `www-authenticate: Bearer` |
+| Image content (before export) | 0 files with `sk_test_`, no `.env`, runs as `uid=10001(app)` |
+
+### Availability (each lab session, for example for the defense)
+
+The Learner Lab stops the instance when the session ends (or with *End Lab*); disk, image, container and
+`app.env` are kept. Never use *Reset*: it deletes every resource of the lab account. To bring the app back:
+
+1. *Start Lab* and wait for the green dot. In EC2, check that `miniapp-translator` is `Running`
+   (otherwise *Instance state* -> *Start*) and copy the new **Public IPv4 address**.
+2. PC: update `HostName` in `~/.ssh/config`. If the PC is on another network, edit the SSH rule of `miniapp-sg`
+   and select *My IP* again.
+3. EC2: `nano ~/miniapp/app.env` -> `CLERK_AUTHORIZED_PARTIES=http://<NEW_PUBLIC_IP>`.
+4. EC2: recreate the container so it reads the new value (`docker stop` + `docker rm` + the `docker run` above).
+   Without this step the container is already running, but Clerk rejects the tokens (`401`) because the origin
+   changed.
+5. Check `http://<NEW_PUBLIC_IP>/api/health`, sign in and translate. The URL of the delivery is the one of the
+   last session; the Vercel URL does not change.
+
+### Costs and retirement of resources
+
+The instance only consumes lab credits while it is running (stopping it with *End Lab* saves them); the 10 GiB
+volume is charged while it exists, even with the instance stopped. After the evaluation, remove everything that
+was created, in this order:
+
+1. EC2 -> Instances -> `miniapp-translator` -> *Instance state* -> **Terminate**. The root volume is deleted with
+   the instance if *Delete on termination* is `Yes` (default of the launch wizard; check it in the *Storage* tab).
+2. EC2 -> Volumes and Elastic IPs: check that nothing is left (no volume `available`, no Elastic IP: none was
+   created).
+3. EC2 -> Security Groups -> delete `miniapp-sg` (possible once no instance uses it).
+4. The key pair `vockey` belongs to the Learner Lab and is not deleted. On the PC: remove the `miniapp-ec2` entry
+   from `~/.ssh/config` and the old IPs from `~/.ssh/known_hosts` (`ssh-keygen -R <IP>`).
+5. Secrets: `app.env` disappears with the instance. If a key had been exposed, rotate it in Groq / Clerk.
 
 ## 10. Operation and verification
 
@@ -580,6 +694,24 @@ always replaced by a fake client, so the tests cost no tokens.
 See [section 8](#8-docker): build, secrets check, health check, 401 without token, browser test and
 `stop`/`start`. Backend tests still pass (13/13) after the change in `backend/main.py`.
 
+### Phase 6 - AWS EC2 (2026-10-19 / 2026-10-20)
+
+See [section 9](#9-aws) for the commands and the full results (Clerk over HTTP, restart, update 0.5 -> 1.0).
+Backend tests still pass (13/13) after the version change to `1.0.0`. In the screenshots the client IP (the
+administrator's public IP) is blacked out; the EC2 public IP is not hidden because it is the public URL.
+
+| Screenshot | What it shows |
+|---|---|
+| [`evidence/phase6-details-p1.png`](evidence/phase6-details-p1.png) | Instance summary: `Running`, type `t2.small`, public IPv4 (the URL), public DNS `*.compute-1.amazonaws.com` (region `us-east-1`; availability zone `us-east-1a`) |
+| [`evidence/phase6-details-p2.png`](evidence/phase6-details-p2.png) | Instance details: AMI `ubuntu-resolute-26.04-amd64-server` (Ubuntu 26.04 LTS, x86_64), platform Linux/UNIX |
+| [`evidence/phase6-security-group.png`](evidence/phase6-security-group.png) | Inbound rules of `miniapp-sg`: only `22/TCP` from one `/32` address and `80/TCP` from `0.0.0.0/0` |
+| [`evidence/phase6-browser.png`](evidence/phase6-browser.png) | First check with image `0.5`: `http://<PUBLIC_IP>` marked "Not Secure", signed in with the Clerk test user, Spanish text translated into Italian |
+| [`evidence/phase6-restart.png`](evidence/phase6-restart.png) | After the lab was stopped overnight: system up 3 minutes, container created 22 hours ago and `Up 3 minutes (healthy)` without any manual action |
+| [`evidence/phase6-ec2-checks.png`](evidence/phase6-ec2-checks.png) | After the update: `docker ps` with `miniapp-translator:1.0 (healthy)` on `0.0.0.0:80->8000`, image labels `version 1.0` + commit hash, `app.env` with permissions `-rw-------`, `systemctl is-enabled docker` -> `enabled` |
+| [`evidence/phase6-browser-1.0.png`](evidence/phase6-browser-1.0.png) | Version 1.0 at the new public IP (new origin in `app.env`): signed in, Spanish text translated into German |
+| [`evidence/phase6-docker-logs.png`](evidence/phase6-docker-logs.png) | `docker logs` of that request: SPA assets `200`, Clerk JWKS `200`, Groq call `200`, `POST /api/translate 200`, health checks from Docker. No tokens and no user text |
+| [`evidence/phase6-401.png`](evidence/phase6-401.png) | Direct call to `http://<PUBLIC_IP>/api/translate` without token (from the instance shell, through the public IP): `401 Unauthorized`, `www-authenticate: Bearer`. The same check from the PC over the Internet also returned `401` |
+
 Example (phase 1, calling the API directly):
 
 ```bash
@@ -602,6 +734,9 @@ curl -X POST http://localhost:8000/api/translate \
 | 3 | `vercel curl` failed: first `curl command not found`, then `curl: option --global-config: is unknown` | `node:24-alpine` has no `curl`, and the CLI forwards `--global-config` to `curl` | Small image `docker/vercel.Dockerfile` (`apk add curl`) and the session folder set with `XDG_DATA_HOME` instead of `--global-config` |
 | 4 | The test user `pepelopez@example.com` could not sign in | Clerk sends a verification code by email and that address does not exist | Clerk test emails: an address containing `+clerk_test` (e.g. `name+clerk_test@example.com`) accepts the fixed code `424242` in development instances. No real email address is needed |
 | 4 | Right after `deploy --prod`, one call without token returned `200` | During the alias switch (a few seconds) the request was served by the **previous** production deployment (phase 3, no Clerk) | Repeated 5 times: always `401`. Old deployments keep their own URLs, but they are protected by Vercel Authentication (`401 Protected deployment`), so they cannot be used to skip the login |
+| 6 | The instance runs as `t2.small`, while the plan said `t3.small` | Wrong type selected in the launch wizard (both have 2 GB); noticed later in the instance details | Kept: the requirement was 2 GB of RAM for Docker plus VS Code Remote-SSH, it works, and the assignment only asks for a suitable type. Changing it would need a stop/start (new IP). The README documents the real type |
+| 6 | The first `docker logs` screenshot showed the administrator's public IP | uvicorn's access log records the client IP of every request, and the blackout did not cover all lines | Blacked out again before committing. The SSH rule screenshot also hides that IP |
+| 6 | After the lab restart the public IP changed (`54.159.x.x` -> `3.85.x.x`) | Learner Lab instances have no fixed (Elastic) IP; a stop/start assigns a new one | Updated `HostName` in `~/.ssh/config` and `CLERK_AUTHORIZED_PARTIES` in `app.env`, then recreated the container (done together with the update to 1.0). Procedure in "Availability" (section 9) |
 | 1 | The first real test still returned 503 (AI not configured) | The `.env` file had been created with `cp` but the key was not saved in the editor, so it still had the placeholder value of `.env.example` | Save the file and check it again; the backend treats the placeholder key as "not configured" on purpose |
 
 ## 12. Git and evidence
@@ -614,4 +749,4 @@ curl -X POST http://localhost:8000/api/translate \
 | First Vercel deployment | `v0.3-vercel` | Done |
 | Clerk integrated and redeployed | `v0.4-auth` | Done |
 | Single container tested | `v0.5-docker` | Done |
-| Final AWS deployment | `v1.0-aws` | Pending |
+| Final AWS deployment (Vercel redeployed with the same version) | `v1.0-aws` | Done |
